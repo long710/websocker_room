@@ -1,0 +1,22 @@
+# Go binaries
+websocketProject
+main
+*.exe
+*.out
+*.app
+
+# IDE and editor specific files
+.idea/
+.vscode/
+
+# OS generated files
+.DS_Store
+
+# Log files
+*.log
+
+# Environment variables file (if any)
+.env
+
+# Go Module vendor directory (Uncomment if you use 'go mod vendor' and don't want to commit it)
+# vendor/ 

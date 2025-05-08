@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Multi-Room Game Client</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f0f0; display: flex; flex-direction: column; align-items: center; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.1); width: 90%; max-width: 700px; margin-bottom: 20px; }
+        h2, h3 { color: #333; text-align: center; }
+        input[type="text"], button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #ddd; }
+        button { background-color: #5cb85c; color: white; cursor: pointer; border: none; }
+        button:hover { background-color: #4cae4c; }
+        button.secondary { background-color: #f0ad4e; }
+        button.secondary:hover { background-color: #ec971f; }
+        button.danger { background-color: #d9534f; }
+        button.danger:hover { background-color: #c9302c; }
+        ul { list-style-type: none; padding: 0; }
+        #messages li, #roomChatMessages li { padding: 8px 12px; margin-bottom: 10px; border-radius: 5px; }
+        #messages li.own, #roomChatMessages li.own { background-color: #dcf8c6; align-self: flex-end; text-align: right; margin-left: auto; max-width: 70%;}
+        #messages li.other, #roomChatMessages li.other { background-color: #e9e9e9; align-self: flex-start; max-width: 70%;}
+        #messages li.system, #roomChatMessages li.system { font-style: italic; text-align: center; color: #777; background-color: transparent; }
+        .view { display: none; } /* Hide views by default */
+        .active-view { display: block !important; } /* Added !important for debugging */
+        #roomList li { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;}
+        #roomList li:hover { background-color: #f9f9f9; }
+        #playerList li { padding: 5px; color: #555; }
+        .form-group { margin-bottom: 10px; }
+        .form-group label { margin-right: 10px; }
+        /* #lobbyView, #roomView { display: none; } Ensure hidden initially, handled by .view */
+        .chat-area { border: 1px solid #ccc; padding: 10px; height: 200px; overflow-y: auto; margin-bottom: 10px; background-color: #f9f9f9; }
+        .chat-input-form { display: flex; }
+        .chat-input-form input { flex-grow: 1; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div id="nickView" class="container active-view">
+        <h2>Welcome! Enter Your Nickname</h2>
+        <div style="text-align: center;">
+            <input id="nickInput" type="text" placeholder="Your Nickname" />
+            <button id="joinLobbyButton">Join Lobby</button>
+        </div>
+    </div>
+
+    <div id="lobbyView" class="container view"> <!-- Initially has 'view' (display:none) -->
+        <h2>Lobby - <span id="lobbyNickname"></span></h2>
+        <div class="form-group">
+            <h3>Create New Room</h3>
+            <input id="roomNameInput" type="text" placeholder="Room Name" />
+            <button id="createRoomButton">Create Room</button>
+        </div>
+        <hr>
+        <h3>Available Rooms</h3>
+        <button id="refreshRoomListButton">Refresh List</button>
+        <ul id="roomList">
+            <!-- Room list will be populated here -->
+        </ul>
+         <div id="lobbyMessagesContainer" class="chat-area" style="height: 100px;">
+            <ul id="lobbyMessages"></ul>
+        </div>
+    </div>
+
+    <div id="roomView" class="container view"> <!-- Initially has 'view' (display:none) -->
+        <h2 id="roomNameDisplay">Room: </h2>
+        <button id="leaveRoomButton" class="danger">Leave Room</button>
+        <hr>
+        <div style="display: flex; justify-content: space-between;">
+            <div style="width: 65%;">
+                <h3>Game Area (Placeholder)</h3>
+                <div id="gameArea" style="min-height: 150px; border: 1px dashed #ccc; padding: 10px; text-align:center;">
+                    Your game content will appear here. <br> Game State: <span id="gameStateDisplay">N/A</span>
+                </div>
+                <h3>Room Chat</h3>
+                <div id="roomChatMessagesContainer" class="chat-area">
+                    <ul id="roomChatMessages"></ul>
+                </div>
+                <form id="roomChatForm" class="chat-input-form">
+                    <input id="roomChatInput" autocomplete="off" placeholder="Type message..." /><button>Send</button>
+                </form>
+            </div>
+            <div style="width: 30%;">
+                <h3>Players</h3>
+                <ul id="playerList">
+                    <!-- Player list will be populated here -->
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const nickView = document.getElementById('nickView');
+        const lobbyView = document.getElementById('lobbyView');
+        const roomView = document.getElementById('roomView');
+
+        const nickInput = document.getElementById('nickInput');
+        const joinLobbyButton = document.getElementById('joinLobbyButton');
+        const lobbyNickname = document.getElementById('lobbyNickname');
+
+        const roomNameInput = document.getElementById('roomNameInput');
+        const createRoomButton = document.getElementById('createRoomButton');
+        const refreshRoomListButton = document.getElementById('refreshRoomListButton');
+        const roomList = document.getElementById('roomList');
+        const lobbyMessages = document.getElementById('lobbyMessages');
+
+        const roomNameDisplay = document.getElementById('roomNameDisplay');
+        const leaveRoomButton = document.getElementById('leaveRoomButton');
+        const gameArea = document.getElementById('gameArea');
+        const gameStateDisplay = document.getElementById('gameStateDisplay');
+        const roomChatMessages = document.getElementById('roomChatMessages');
+        const roomChatForm = document.getElementById('roomChatForm');
+        const roomChatInput = document.getElementById('roomChatInput');
+        const playerList = document.getElementById('playerList');
+
+        let ws;
+        let nickname = '';
+        let currentView = 'nickView';
+        let currentRoomID = null;
+
+        function showView(viewId) {
+            console.log(`DEBUG: Attempting to show view: ${viewId}`);
+            nickView.classList.remove('active-view');
+            lobbyView.classList.remove('active-view');
+            roomView.classList.remove('active-view');
+            
+            const targetView = document.getElementById(viewId);
+            if (targetView) {
+                targetView.classList.add('active-view');
+                console.log(`DEBUG: ${viewId} classList after add: ${targetView.classList}`);
+                const computedStyle = window.getComputedStyle(targetView);
+                console.log(`DEBUG: ${viewId} computed display style: ${computedStyle.display}`);
+            } else {
+                console.error(`DEBUG: View with ID ${viewId} not found!`);
+            }
+            currentView = viewId;
+        }
+
+        joinLobbyButton.onclick = function() {
+            nickname = nickInput.value.trim();
+            if (!nickname) {
+                alert('Please enter a nickname!');
+                return;
+            }
+            console.log("DEBUG: joinLobbyButton clicked, nickname set. Calling connectWebSocket...");
+            lobbyNickname.textContent = nickname;
+            connectWebSocket();
+        };
+
+        function connectWebSocket() {
+            console.log("DEBUG: connectWebSocket function called.");
+            ws = new WebSocket("ws://" + window.location.host + "/ws");
+
+            ws.onopen = function() {
+                console.log("DEBUG: WebSocket onopen event triggered.");
+                appendSystemMessage("Connected to server. Joining lobby...", 'lobbyMessages');
+                ws.send(JSON.stringify({ type: "join_lobby", nickname: nickname }));
+                
+                console.log("DEBUG: Calling showView('lobbyView') from onopen...");
+                showView('lobbyView');
+                console.log("DEBUG: Called showView('lobbyView') from onopen.");
+                
+                const lobbyViewElement = document.getElementById('lobbyView');
+                if (lobbyViewElement.classList.contains('active-view')) {
+                    console.log("DEBUG: lobbyView HAS active-view class immediately after showView call in onopen.");
+                    const lobbyViewStyle = window.getComputedStyle(lobbyViewElement);
+                    console.log("DEBUG: lobbyView computed display style in onopen: " + lobbyViewStyle.display);
+                } else {
+                    console.error("DEBUG: lobbyView DOES NOT have active-view class immediately after showView call in onopen.");
+                }
+                requestRoomList(); 
+            };
+
+            ws.onmessage = function(event) {
+                console.log("Message from server: ", event.data); // Keep this for general message logging
+                const msgData = JSON.parse(event.data);
+
+                switch (msgData.type) {
+                    case "room_list_update":
+                        console.log("DEBUG: Received room_list_update", msgData.payload);
+                        displayRoomList(msgData.payload);
+                        break;
+                    case "room_created_ok":
+                        console.log("DEBUG: Received room_created_ok", msgData);
+                        // System message will be handled by enterRoomView after view switch
+                        currentRoomID = msgData.room_id || msgData.RoomID;
+                        enterRoomView(msgData.payload, "You've created and joined the room."); 
+                        break;
+                    case "room_joined_ok":
+                        console.log("DEBUG: Received room_joined_ok", msgData);
+                        // System message will be handled by enterRoomView after view switch
+                        currentRoomID = msgData.room_id || msgData.RoomID;
+                        enterRoomView(msgData.payload, "Successfully joined the room.");
+                        break;
+                    case "player_joined_room":
+                        console.log("DEBUG: Received player_joined_room", msgData);
+                        if (currentView === 'roomView' && (msgData.room_id || msgData.RoomID) === currentRoomID) {
+                            appendSystemMessage(`${msgData.nickname} has joined the room.`, 'roomChatMessages');
+                            if(msgData.payload && msgData.payload.players) {
+                                updatePlayerList(msgData.payload.players);
+                            } else if (msgData.payload && msgData.payload.Players) { // Check for capital P if server sends that
+                                updatePlayerList(msgData.payload.Players);
+                            }
+                        }
+                        break;
+                    case "player_left_room":
+                        console.log("DEBUG: Received player_left_room", msgData);
+                        if (currentView === 'roomView' && (msgData.room_id || msgData.RoomID) === currentRoomID) {
+                            appendSystemMessage(`${msgData.nickname} has left the room.`, 'roomChatMessages');
+                             if(msgData.payload && (msgData.payload.players || msgData.payload.Players)) {
+                                updatePlayerList(msgData.payload.players || msgData.payload.Players);
+                            }
+                        }
+                        break;
+                    case "room_chat":
+                         console.log("DEBUG: Received room_chat", msgData);
+                        if (currentView === 'roomView' && (msgData.room_id || msgData.RoomID) === currentRoomID) {
+                            appendRoomChatMessage(msgData, false);
+                        }
+                        break;
+                    case "private_room_chat":
+                        console.log("DEBUG: Received private_room_chat", msgData);
+                        if (currentView === 'roomView' && (msgData.room_id || msgData.RoomID) === currentRoomID) {
+                            appendRoomChatMessage(msgData, true);
+                        }
+                        break;
+                    case "game_state_update":
+                        console.log("DEBUG: Received game_state_update", msgData);
+                        if (currentView === 'roomView' && (msgData.room_id || msgData.RoomID) === currentRoomID) {
+                            updateGameArea(msgData.payload);
+                        }
+                        break;
+                    case "error":
+                        console.error("DEBUG: Received error from server:", msgData.text);
+                        alert("Error: " + msgData.text);
+                        appendSystemMessage(`Error: ${msgData.text}`, currentView === 'roomView' ? 'roomChatMessages' : 'lobbyMessages');
+                        break;
+                    default:
+                        console.log("DEBUG: Unknown message type from server:", msgData.type, msgData);
+                }
+            };
+
+            ws.onclose = function() {
+                console.log("DEBUG: WebSocket onclose event triggered.");
+                appendSystemMessage("Disconnected from server. Please refresh to reconnect.", currentView === 'roomView' ? 'roomChatMessages' : 'lobbyMessages');
+                showView('nickView'); 
+            };
+
+            ws.onerror = function(error) {
+                console.error("DEBUG: WebSocket onerror event triggered:", error);
+                appendSystemMessage("Connection error!", currentView === 'roomView' ? 'roomChatMessages' : 'lobbyMessages');
+            };
+        }
+
+        function requestRoomList() {
+            console.log("DEBUG: requestRoomList called.");
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "list_rooms" }));
+            }
+        }
+
+        createRoomButton.onclick = function() {
+            const name = roomNameInput.value.trim();
+            if (!name) {
+                alert('Please enter a room name!');
+                return;
+            }
+            console.log(`DEBUG: Create Room button clicked, name: ${name}`);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "create_room", room_name: name }));
+            }
+            roomNameInput.value = ''; // Clear input
+        };
+
+        refreshRoomListButton.onclick = requestRoomList;
+
+        function displayRoomList(rooms) {
+            console.log("DEBUG: displayRoomList called with rooms:", rooms);
+            roomList.innerHTML = ''; // Clear existing list
+
+            if (!rooms || rooms.length === 0) {
+                const li = document.createElement('li');
+                li.textContent = 'No rooms available. Create one!';
+                roomList.appendChild(li);
+                return;
+            }
+
+            rooms.forEach(room => {
+                const li = document.createElement('li');
+                // Display room name, or a default if not present
+                const roomDisplayName = room.name ? room.name : `Room ${room.id.substring(0,6)}`;
+                const playersInfo = `(${room.current_players || 0}/${room.max_players || 'N/A'}) Players`;
+                li.textContent = `${roomDisplayName} ${playersInfo} - ID: ${room.id.substring(0, 8)}... `;
+                
+                const joinButton = document.createElement('button');
+                joinButton.textContent = 'Join';
+                joinButton.dataset.roomId = room.id; // Store room.id in a data attribute
+                joinButton.classList.add('secondary'); 
+
+                joinButton.onclick = function(event) {
+                    const idToJoin = event.target.dataset.roomId; // Retrieve room.id from data attribute
+                    console.log(`DEBUG: Join button clicked for room ID: ${idToJoin}`);
+                    if (idToJoin) {
+                        joinRoom(idToJoin);
+                    } else {
+                        console.error("DEBUG: Room ID is undefined on join button click!");
+                        alert("Error: Could not determine room ID to join.");
+                    }
+                };
+                li.appendChild(joinButton);
+                roomList.appendChild(li);
+            });
+        }
+
+        function joinRoom(roomId) {
+            console.log(`DEBUG: Attempting to join room: ${roomId}`);
+            if (ws && ws.readyState === WebSocket.OPEN && roomId) {
+                ws.send(JSON.stringify({ type: "join_room", room_id: roomId }));
+            }
+        }
+
+        function enterRoomView(roomDetails, entryMessage) {
+            console.log("DEBUG: enterRoomView called with details:", roomDetails, "Entry Message:", entryMessage);
+            if (!roomDetails || !roomDetails.id) { // Check for roomDetails and its ID
+                console.error("DEBUG: Cannot enter room, roomDetails are invalid or missing ID", roomDetails);
+                alert("Error entering room. Invalid room data received. Please try again.");
+                showView('lobbyView'); 
+                requestRoomList();
+                return;
+            }
+            currentRoomID = roomDetails.id;
+            roomNameDisplay.textContent = `Room: ${roomDetails.name || roomDetails.id}`;
+            showView('roomView'); // Switch view first
+            
+            updatePlayerList(roomDetails.players || []);
+            updateGameArea(roomDetails.game_state || { status: "Waiting..."});
+            roomChatMessages.innerHTML = ''; // Clear previous room chat
+            
+            if (entryMessage) { // Append the specific entry message
+                appendSystemMessage(entryMessage, 'roomChatMessages');
+            }
+            appendSystemMessage(`You are in: ${roomDetails.name || roomDetails.id}. (ID: ${currentRoomID})`, 'roomChatMessages');
+        }
+
+        function updatePlayerList(playersArray) {
+            console.log("DEBUG: updatePlayerList called with players:", playersArray);
+            playerList.innerHTML = '';
+            if (playersArray && playersArray.length > 0) {
+                playersArray.forEach(playerNick => {
+                    const li = document.createElement('li');
+                    li.textContent = playerNick;
+                    if (playerNick === nickname) {
+                        li.textContent += " (You)";
+                        li.style.fontWeight = "bold";
+                    }
+                    playerList.appendChild(li);
+                });
+                if (playersArray.length === 1 && playersArray[0] === nickname) {
+                    const li = document.createElement('li');
+                    li.textContent = "Waiting for other players...";
+                    li.style.fontStyle = "italic";
+                    playerList.appendChild(li); // Append this message below the player's own name
+                }
+            } else {
+                const li = document.createElement('li');
+                li.textContent = "No players in the room."; // Should ideally not happen if at least host is there
+                playerList.appendChild(li);
+            }
+        }
+        
+        function updateGameArea(gameStateObj) {
+            console.log("DEBUG: updateGameArea called with gameState:", gameStateObj);
+            if (gameStateObj) {
+                gameStateDisplay.textContent = `Status: ${gameStateObj.status || 'N/A'}. Turn: ${gameStateObj.current_turn || 'N/A'}`;
+            } else {
+                gameStateDisplay.textContent = "N/A";
+            }
+        }
+
+        leaveRoomButton.onclick = function() {
+            console.log("DEBUG: leaveRoomButton clicked.");
+            if (ws && ws.readyState === WebSocket.OPEN && currentRoomID) {
+                ws.send(JSON.stringify({ type: "leave_room" }));
+                currentRoomID = null;
+                showView('lobbyView');
+                requestRoomList(); 
+                appendSystemMessage("You left the room.", 'lobbyMessages');
+            }
+        };
+
+        roomChatForm.onsubmit = function(e) {
+            e.preventDefault();
+            const messageText = roomChatInput.value.trim();
+            if (!messageText || !ws || ws.readyState !== WebSocket.OPEN || !currentRoomID) {
+                return;
+            }
+
+            let messageToSend;
+            // Check for whisper command: /whisper targetNickname message_old text
+            if (messageText.toLowerCase().startsWith("/whisper ")) {
+                const parts = messageText.substring("/whisper ".length).split(" ");
+                if (parts.length >= 2) {
+                    const targetNick = parts.shift(); // First part is target nickname
+                    const privateMsgText = parts.join(" "); // The rest is the message_old
+                    
+                    if (targetNick.toLowerCase() === nickname.toLowerCase()) {
+                        alert("You cannot whisper to yourself using this command. Just type normally to see your own messages.");
+                        roomChatInput.value = '';
+                        return;
+                    }
+
+                    console.log(`DEBUG: Sending private_room_chat to ${targetNick}: ${privateMsgText}`);
+                    messageToSend = {
+                        type: "private_room_chat",
+                        target_nickname: targetNick,
+                        text: privateMsgText,
+                        room_id: currentRoomID // Good to include room_id for context, though server might already know
+                    };
+                } else {
+                    alert("Invalid whisper command. Use: /whisper <nickname> <message>");
+                    return; // Don't send if command is malformed
+                }
+            } else { // Regular room chat
+                console.log(`DEBUG: Sending room_chat: ${messageText}`);
+                messageToSend = {
+                    type: "room_chat",
+                    text: messageText,
+                    room_id: currentRoomID
+                };
+            }
+
+            if (messageToSend) {
+                console.log("DEBUG: Client sending message:", JSON.stringify(messageToSend));
+                ws.send(JSON.stringify(messageToSend));
+            }
+            roomChatInput.value = '';
+        };
+
+        function appendRoomChatMessage(msgData, isPrivate) {
+            const item = document.createElement('li');
+            let prefix = "";
+
+            if (isPrivate) {
+                item.style.color = "purple"; // Basic styling for private messages
+                item.style.fontStyle = "italic";
+                if (msgData.nickname === nickname) { // Message sent by current user to someone else
+                    prefix = `To ${msgData.target_nickname}: `;
+                    item.className = 'own'; // Align right
+                } else if (msgData.target_nickname === nickname) { // Message received by current user from someone else
+                    prefix = `From ${msgData.nickname}: `;
+                    item.className = 'other'; // Align left
+                } else {
+                    // This case should ideally not happen if onmessage filters correctly,
+                    // but as a fallback if a private message_old not involving this user slips through.
+                    console.warn("DEBUG: Received a private message_old not intended for this user directly, but displaying:", msgData);
+                    prefix = `Private [${msgData.nickname} to ${msgData.target_nickname}]: `;
+                    item.className = 'system'; // Or some other general class
+                }
+            } else { // Regular room chat
+                if (msgData.nickname === nickname) {
+                    item.className = 'own';
+                    prefix = "You: ";
+                } else {
+                    item.className = 'other';
+                    prefix = `${msgData.nickname}: `;
+                }
+            }
+            
+            item.textContent = prefix + msgData.text;
+            roomChatMessages.appendChild(item);
+            scrollToBottom(roomChatMessagesContainer);
+        }
+
+        function appendSystemMessage(text, targetListId) {
+            const listElement = document.getElementById(targetListId);
+            if (!listElement) {
+                console.error(`DEBUG: Cannot find listElement with ID: ${targetListId} for system message.`);
+                return;
+            }
+            const item = document.createElement('li');
+            item.className = 'system';
+            item.textContent = text;
+            listElement.appendChild(item);
+            scrollToBottom(listElement.parentElement);
+        }
+        
+        function scrollToBottom(element) {
+            if (element) {
+                element.scrollTop = element.scrollHeight;
+            }
+        }
+
+        console.log("DEBUG: Initial page script loaded. NickView should be active by default.");
+
+    </script>
+</body>
+</html> 
